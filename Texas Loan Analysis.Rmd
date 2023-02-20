@@ -1,0 +1,841 @@
+---
+title: "Loan analysis of Texas"
+author: "Group 11"
+date: "2021/11/30"
+output: ioslides_presentation
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include=FALSE}
+library(knitr)
+library(dplyr)
+library(tidyverse)
+library(forcats)
+library(gridExtra)
+library(RSQLite)
+library(jsonlite)
+library(gtable)
+library(grid)
+library(latex2exp)
+library(gridBase)
+library(nnet)
+library(magrittr)
+library(ggplot2)
+library(ggmap)
+library(maps)
+library(ggpubr)
+library(pacman)
+library(caret)
+library(pheatmap)
+library(corrplot)
+library(pROC)
+library(kableExtra)
+
+fillColor = "#FFA07A"
+fillColor2 = "#F1C40F"
+
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73",
+"#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#EE6363")
+
+theme1 <- theme_bw() +
+theme(axis.text = element_text(size = 8, colour = "#6b3447"),
+axis.title = element_text(size = 10, colour = "#2f2f63"),
+legend.title = element_text(size = 8, colour = "#2f2f63"),
+legend.text = element_text(size = 8, colour = "#6b3447"),
+title = element_text(size = 12, colour = "#2f2f63"),
+axis.ticks = element_line(colour = "#6b3447"),
+plot.caption = element_text(size = 8, colour = "#2f2f63"),
+plot.subtitle = element_text(size = 10, colour = "#2f2f63"))
+```
+
+```{r, include=FALSE}
+Sys.setlocale('LC_ALL','English')
+data<-read.csv("E:/605/A-Final Project/2015_tx_all-records_labels/2015_tx_oringinal.csv",header=TRUE)
+data_sql<-read.csv("E:/605/accepted_2007_to_2018Q4.csv/LD.csv",header=TRUE)
+tx_population <- read.csv("E:/605/A-Final Project/2015_tx_all-records_labels/TX_county_population.csv",header=TRUE)
+dcon <- dbConnect(SQLite(), dbname = paste0("E:/605/A-Final Project/report-1st edition/hmda_2015_tx.db"))
+dbSendQuery(conn = dcon, "
+PRAGMA foreign_keys = ON;
+")
+dbListTables(dcon)
+res <- dbSendQuery(conn = dcon, "
+SELECT *
+FROM hmda_2015_tx;
+")
+data <- dbFetch(res, -1)
+dbClearResult(res)
+res <- dbSendQuery(conn = dcon, "
+SELECT *
+FROM TX_county_population;
+")
+tx_population <- dbFetch(res, -1)
+dbClearResult(res)
+dbDisconnect(dcon)
+```
+
+## Introduction
+* Main data set: 2015 HMDA loan information of Texas
+* Factors: 
+    * county
+    * loan purpose
+    * lien status
+    * property type
+    * income & loan amount
+    * ethnicity & race & gender
+    * major reason of denial
+
+##
+```{r, echo=FALSE}
+data %>% 
+  count(action_taken_name) %>% 
+  arrange(desc(n)) %>% 
+  knitr::kable()%>%kable_styling(full_width = 1,font_size=12)
+```
+
+* remove "Loan purchased by the institution" and "Application withdrawn by applicant"
+* Category data:
+    * *Loan originated*: success
+    * *Others*: fail
+
+## County Analysis
+which country has the highest number of loan applications?
+```{r, include=FALSE}
+data$county <- data$county_name %>%
+  str_sub(start = 1, end = -8) %>%
+  tolower()
+df <- data %>%
+  filter(county!= "") %>%
+  group_by(county) %>%
+  count() %>%
+  arrange(desc(n)) %>%
+  rename(count = n, subregion = county)
+df[c(1,2,3,4,5,(nrow(df)-5),(nrow(df)-4),(nrow(df)-3),(nrow(df)-2),(nrow(df)-1),nrow(df)),]  %>%
+  knitr::kable()
+```
+
+```{r, echo=FALSE}
+## Getting the Texas map data
+tx_df <- map_data("state",  region = "texas")
+## Now, let's also get the Texas counties data
+tx_county <- map_data("county", region = "texas")
+tx_county <- inner_join(tx_county, df, by = "subregion")
+
+ditch_the_axes <- theme(
+  axis.text = element_blank(),
+  axis.line = element_blank(),
+  axis.ticks = element_blank(),
+  panel.border = element_blank(),
+  panel.grid = element_blank(),
+  axis.title = element_blank()
+  )
+
+tx_base <- ggplot(data = tx_df, aes(x=long, y=lat, group = group)) + coord_fixed(1.3) +
+  geom_polygon(color = "black", fill = "grey")
+
+tx_base + geom_polygon(data = tx_county, aes(fill = count), color = "white") +
+  geom_polygon(color = "black", fill = NA) +
+  theme_bw() + 
+  ditch_the_axes + 
+  scale_fill_gradientn(colours = rev(rainbow(7)),
+                         breaks = c(1,10,1000,10000,100000),
+                         trans = "log10")
+```
+* The red part in the map is Harris county, which has the highest number of loan applications
+
+## County Analysis
+which county has highest application rate?
+```{r, echo=FALSE}
+tx_population <- read.csv("E:/605/A-Final Project/2015_tx_all-records_labels/TX_county_population.csv",header=TRUE)
+colnames(tx_population) <- c("subregion","population")
+tx_population$subregion <- tx_population$subregion %>%
+  str_sub(start = 1, end = -15) %>%
+  tolower()
+tx_population$population<-tx_population$population %>%
+  str_replace_all("[[:punct:]]","") %>%
+  as.numeric()
+df <- inner_join(df,tx_population,by = "subregion")
+df %>%
+  mutate(application_rate = count/population) %>%
+  select(subregion, application_rate) %>%
+  arrange(desc(application_rate)) %>%
+  head(5) %>%
+  knitr::kable(align = "c")%>%kable_styling(full_width = 1,font_size=12)
+```
+
+* Rockwall County has the highest application rate. The data means that there are more than 8 out of every 100 people have applied for the loan.
+
+## County Analysis
+which county has highest approve rate?
+```{r, include=FALSE}
+data <- data %>% 
+  mutate(loan_status = ifelse(action_taken_name == "Loan originated", "success", "fail"))
+```
+
+```{r, include=FALSE}
+df <- data %>% 
+  filter(county!="") %>% 
+  group_by(county) %>% 
+  count(loan_status) %>% 
+  spread(loan_status, n) %>% 
+  mutate(success_rate = success/(success + fail)) %>% 
+  arrange(desc(success_rate)) 
+
+head(df) %>% 
+  knitr::kable()
+```
+
+```{r, echo=FALSE}
+df <- df %>% 
+  select(subregion = county, success_rate)
+
+tx_county <- inner_join(tx_county, df, by = "subregion")
+
+tx_base + geom_polygon(data = tx_county, aes(fill = success_rate), color = "white") +
+  geom_polygon(color = "black", fill = NA) +
+  theme_bw() + 
+  ditch_the_axes + 
+  scale_fill_gradientn(colours = rev(rainbow(7)))
+```
+
+* The top 3 counties with the highest approve rate is Jeff Davis, Glasscock and Foard. 
+
+## Loan purpose
+success rate among different loan purpose:
+```{r, include=FALSE}
+## killerplot function
+killerplot <- function(data, main, xfont, is.log = TRUE,
+                       is.prob = TRUE, radius){
+  prob1 <- round(data[,2]/(data[,2] + data[,3]), 3)
+  prob2 <- 1 - prob1
+  yname <- "Number"
+  leglable <- colnames(data)[-1]
+  if(is.log){
+    data[,-1] <- log(data[,-1])
+    yname <- "log(Number)"
+  }
+  nlines <- nrow(data)
+  lineYscale1 <- c(0, max(data[,2]) * 1.05)
+  lineYscale2 <- c(max(data[,3]) * 1.05, 0)
+  ywidth <- as.character(round(max(data[,2])))
+  
+  ## The entire vp
+  pushViewport(plotViewport(c(3.1, 4.5, 2.1, 2.1),
+                            layout = grid.layout(2, 1)))
+  
+  ### add the title of plot
+  grid.text(main, y = 1.05,
+            hjust = 0.5, vjust = 0.5, rot = 0,
+            gp = gpar(fontsize=15))
+
+  ## The first row vp
+  pushViewport(viewport(layout.pos.row = 1, 
+                        yscale = lineYscale1,
+                        layout = grid.layout(1,nlines+1,
+                                             widths=c(rep(1,nlines),0.5))))
+  grid.rect()
+  grid.yaxis()
+  
+  ### Plot each vp of the first row vp
+  for (i in 1:nlines){
+    pushViewport(viewport(layout.pos.row = 1,
+                          layout.pos.col = i,
+                          yscale = lineYscale1))
+    #### generating lines
+    grid.lines(x=unit(c(0.5, 0.5), "npc"),
+               y=unit(c(0,data[i,2]), "native"),
+               gp=gpar(col="red"))
+    grid.lines(x=unit(c(0.4, 0.6), "npc"),
+               y=unit(c(data[i,2],data[i,2]), "native"),
+               gp=gpar(col="red"))
+    #### generating semicircles
+    #### let the probability is proportional to the radius
+    #### setting prob=0 to r=0npc and prob=1 to r=0.5npc
+    if(is.prob){
+    vp1 <- viewport(layout.pos.row = 1,
+                    layout.pos.col = i,
+                    x=0.5, y=0, width = 1, height = 0.5,
+                    just = c("bottom"), clip = "on")
+    grid.circle(x=0.5, y=0, r=prob1[i,1]*radius,
+                gp = gpar(fill = "yellow"), vp=vp1)
+    
+    #### Add the approved rate
+    if(prob1[i,1] > prob2[i,1]){
+       grid.text(prob1[i,1],y = unit(2,"lines"),
+                gp = gpar(fontsize=8.5, lineheight=0.3))
+      }
+    }
+    popViewport()
+  }
+  
+  
+  ### the nlines+1th vp, plot Legend
+  pushViewport(viewport(layout.pos.row = 1,
+                        layout.pos.col = nlines+1,
+                        yscale = lineYscale1))
+  grid.rect(x=0.5, y=0.6, width = 1, height = 0.3,
+            just = "bottom")
+  grid.lines(x=c(0.15,0.85), y=c(0.84,0.84),
+             gp=gpar(col="red"))
+  grid.text(colnames(data)[-1][1], x=0.50, y=0.80, gp=gpar(fontsize=9))
+  grid.lines(x=c(0.15,0.85), y=c(0.72,0.72),
+             gp=gpar(col="blue"))
+  grid.text(colnames(data)[-1][2], x=0.50, y=0.68, gp=gpar(fontsize=9))
+  popViewport()
+  
+  ## pop the first row vp
+  popViewport()
+  
+  ## The second row vp
+  pushViewport(viewport(layout.pos.row = 2, 
+                        yscale = lineYscale2,
+                        layout = grid.layout(1,nlines+1,
+                                             widths=c(rep(1,nlines),0.5))))
+  grid.rect()
+  grid.yaxis()
+  
+  ### Plot each vp of the second row vp
+  for (i in 1:nlines){
+    pushViewport(viewport(layout.pos.row = 1,
+                          layout.pos.col = i,
+                          yscale = lineYscale2))
+    #### generating lines
+    grid.lines(x=unit(c(0.5, 0.5), "npc"),
+               y=unit(c(0,data[i,3]), "native"),
+               gp=gpar(col="blue"))
+    grid.lines(x=unit(c(0.4, 0.6), "npc"),
+               y=unit(c(data[i,3],data[i,3]), "native"),
+               gp=gpar(col="blue"))
+    #### generating semicircles
+    #### let the probability is proportional to the radius
+    #### setting prob=0 to r=0npc and prob=1 to r=0.5npc
+    if(is.prob){
+    vp2 <- viewport(layout.pos.row = 1,
+                    layout.pos.col = i,
+                    x=0.5, y=1, width = 1, height = 0.5,
+                    just = c("top"), clip = "on")
+    grid.circle(x=0.5, y=1, r=prob2[i,1]*radius,
+                gp = gpar(fill = "green"), vp=vp2)
+    
+    if(prob2[i,1] > prob1[i,1]){
+      grid.text(prob2[i,1],y = unit(0.96,"npc"), 
+                gp = gpar(fontsize=8.5, lineheight=0.3))
+      }
+    #### The first column of the data is category, i.e. x_axis
+    grid.text(data[i,1], y = unit(-1,"lines"),
+              hjust = 0.5, vjust = 0.5, rot = 0,
+              gp = gpar(fontsize=xfont, lineheight=0.8))
+    }
+    popViewport()
+  }
+  
+  ## pop the second row vp
+  popViewport()
+  
+  if(is.log){
+    grid.text(yname, x = unit(-3, "strwidth", ywidth), y = 0.5,
+              hjust = 0.5, vjust = 0.5, rot = 90,
+              gp = gpar(fontsize=13, lineheight=0.3))
+  }
+  else if(is.log == FALSE){
+    grid.text(yname, x = unit(-1.32,"strwidth", ywidth), y = 0.5,
+              hjust = 0.5, vjust = 0.5, rot = 90,
+              gp = gpar(fontsize=13, lineheight=0.3))
+  }
+  popViewport()
+}
+
+df_lien <- data %>%
+  filter(!is.na(lien_status_name)) %>% 
+  group_by(lien_status_name) %>% 
+  count(loan_status) %>% 
+  spread(key=loan_status, value=n)
+
+df_property <- data %>%
+  filter(!is.na(property_type_name)) %>% 
+  group_by(property_type_name) %>% 
+  count(loan_status) %>% 
+  spread(key=loan_status, value=n)
+```
+
+```{r, echo=FALSE}
+data %>%
+  group_by(loan_purpose_name) %>%
+  count(loan_status) %>%
+  spread(loan_status, n) %>%
+  mutate(success_rate = success/(success + fail)) %>%
+  arrange(desc(success_rate)) %>%
+  knitr::kable()
+```
+
+## Loan purpose
+```{r, echo=FALSE}
+p1 <- ggplot(data = data) +
+  geom_bar(aes(x = loan_purpose_name, fill = loan_status),position = 'stack') +
+  theme1 +
+  theme(axis.text.x = element_text(hjust = 0, angle = -30),
+  title = element_text(size = 7)) +
+  labs(title = "success loans for different purposes") +
+  scale_fill_manual(values = c("#999999", "#E69F00")) +
+  guides(fill = "none")
+
+p2 <- ggplot(data = data) +
+  geom_bar(aes(x = loan_purpose_name, fill = loan_status),position = 'fill') +
+  theme1 +
+  theme(axis.text.x = element_text(hjust = 0, angle = -30),
+  title = element_text(size = 7)) +
+  labs(title = "percent of loans success for different purposes", y = "percent") +
+  scale_fill_manual(values = c("#999999", "#E69F00"))
+
+ggarrange(p1,p2,ncol = 2, widths = c(2.05,2.95))
+```
+
+* The applicants' income for successful loans (red) is generally larger than the income for
+fail loans (blue).  
+* Both histograms show that the distributions are positively skewed.
+
+## lien status
+
+* A lien guarantee the lenders will be repaid. If the underlying obligation is not satisfied, the lender may be able to seize the asset that is the subject of the lien. Most mortgages are secured by a lien against the property. In the event of forced liquidation, first lien holders will generally get paid before subordinate lien holders.
+* Most of the loans are secured by a first lien. Loans secured by first lien get approved about 70% of the time. Loans not secured by any lien has the highest percentage of not getting approved.
+```{r, warning= FALSE}
+ui <- bootstrapPage(
+  
+  sidebarPanel(
+    checkboxInput(inputId = "log_number",
+                  label = "Show Log Number",
+                  value = TRUE),
+    
+    checkboxInput(inputId = "probability",
+                  label = "Show Probability Circle",
+                  value = TRUE)
+    ),
+  
+  mainPanel(
+    plotOutput(outputId = "main_plot", height = "300px")
+    ),
+  
+  conditionalPanel(condition = "input.probability == true",
+                   sliderInput(inputId = "pro_raidus",
+                               label = "Semicircle Radius",
+                               min = 0.1, max = 1.0, value = 0.5, step = 0.05)
+  )
+)
+
+server <- function(input, output){
+  
+  output$main_plot <- renderPlot({
+    
+    grid.newpage()
+    killerplot(data = df_lien,
+               main="Status of loan approvals of loan purpose",
+               xfont=9,
+               is.log = input$log_number,
+               is.prob = input$probability,
+               radius = input$pro_raidus)
+    }
+  )
+}
+
+shinyApp(ui, server)
+```
+
+## Different property type
+```{r, warning= FALSE}
+ui <- bootstrapPage(
+  
+  sidebarPanel(
+    checkboxInput(inputId = "log_number",
+                  label = "Show Log Number",
+                  value = TRUE),
+    
+    checkboxInput(inputId = "probability",
+                  label = "Show Probability Circle",
+                  value = TRUE)
+    ),
+  
+  mainPanel(
+    plotOutput(outputId = "main_plot", height = "300px")
+    ),
+  
+  conditionalPanel(condition = "input.probability == true",
+                   sliderInput(inputId = "pro_raidus",
+                               label = "Semicircle Radius",
+                               min = 0.1, max = 1.0, value = 0.5, step = 0.05)
+  )
+)
+
+server <- function(input, output){
+  
+  output$main_plot <- renderPlot({
+    
+    grid.newpage()
+    killerplot(data = df_property,
+               main="Status of loan approvals of loan purpose",
+               xfont=9,
+               is.log = input$log_number,
+               is.prob = input$probability,
+               radius = input$pro_raidus)
+    }
+  )
+}
+
+shinyApp(ui, server)
+```
+
+
+## Income
+What can we find by analysing applicant income?
+```{r, echo=FALSE,warning=FALSE}
+data %>%
+  ggplot(aes(x = applicant_income_000s))+
+  geom_histogram(data = subset(data, loan_status == "success"),fill = "red", alpha = 0.2, binwidth = 30) +
+  geom_histogram(data = subset(data, loan_status == "fail"),fill = "blue", alpha = 0.2, binwidth = 30) +
+  scale_x_continuous(limits = c(0, 400)) + 
+  labs(x = "Income in thousands", y = "Count",
+       title = "Histogram of applicant income") +
+  theme1
+```
+
+## Income
+Let's see the median number of incomes. 
+* success
+```{r, echo=FALSE}
+data %>% 
+  filter(loan_status == "success" & msamd_name!="") %>% 
+  group_by(msamd_name) %>% 
+  summarise(mean_family_income_000s = mean(hud_median_family_income,na.rm = TRUE)/1000,
+            mean_applicant_income_000s = mean(applicant_income_000s,na.rm = TRUE)) %>% 
+  gather(key = 'group', value = 'income', mean_family_income_000s, mean_applicant_income_000s) %>% 
+  ggplot(aes(x=msamd_name, y = income, group = group, color = group)) + 
+  geom_point() + 
+  geom_line() + 
+  labs(title = "Difference in neighborhood median family income and applicant income for successful loans",x="MSA/MD", y = "Income in thousands") + 
+  theme1 + 
+  theme(axis.text.x = element_text(hjust = 1, angle = 90),
+        title = element_text(size = 8)) + 
+  scale_fill_manual(values = cbPalette)
+```
+
+## Income
+* fail
+```{r, echo=FALSE}
+data %>% 
+  filter(loan_status == "fail" & msamd_name!="") %>% 
+  group_by(msamd_name) %>% 
+  summarise(mean_family_income_000s = mean(hud_median_family_income,na.rm = TRUE)/1000,
+            mean_applicant_income_000s = mean(applicant_income_000s,na.rm = TRUE)) %>% 
+  gather(key = 'group', value = 'income', mean_family_income_000s, mean_applicant_income_000s) %>% 
+  ggplot(aes(x=msamd_name, y = income, group = group, color = group)) + 
+  geom_point() + 
+  geom_line() +
+  labs(title = "Difference in neighborhood median family income and applicant income for fail loans", x = "MSA/MD", y = "Income in thousands") + 
+  theme1 + 
+  theme(axis.text.x = element_text(hjust = 1, angle = 90),
+        title = element_text(size = 8)) + 
+  scale_fill_manual(values = cbPalette)
+```
+
+## Loan amount
+* What is the loan amount pattern for applicants in different income categories?
+* Firstly, categorize people as falling in the low (for applicant income less than 100k), middle (between 100k and 200k), and high (more than 200k) income range.
+7
+```{r, echo=FALSE}
+p1 <- data %>% 
+  filter(!is.na(applicant_income_000s)) %>% 
+  mutate(applicant_income_range = ifelse(applicant_income_000s<=100, 'Low', ifelse(
+    applicant_income_000s<=200, 'Medium', 'High'
+  ))) %>% 
+  ggplot(aes(x = applicant_income_range, y = loan_amount_000s)) + 
+  geom_boxplot(aes(fill = loan_status)) +
+  labs(title = "boxplot of loan amount for different income range", 
+       x = "applicant's income range", y = "loan amout in thousands") + 
+  theme1 +  theme(title = element_text(size = 8)) +
+  scale_fill_manual(values = c("#EE6363", "#0072B2"))
+
+p2 <- data %>% 
+  filter(!is.na(applicant_income_000s)&loan_amount_000s<1500) %>% 
+  mutate(applicant_income_range = ifelse(applicant_income_000s<=100, 'Low', ifelse(
+    applicant_income_000s<=200, 'Medium', 'High'
+  ))) %>% 
+  ggplot(aes(x = applicant_income_range, y = loan_amount_000s)) + 
+  geom_boxplot(aes(fill = loan_status)) +
+  labs(title = "boxplot of loan amount for different income range", 
+       x = "applicant's income range", y = "loan amout in thousands") + 
+  theme1 +  theme(title = element_text(size = 8)) +
+  scale_fill_manual(values = c("#EE6363", "#0072B2"))
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(1, 2)))
+print(p1, vp = viewport(layout.pos.row = 1,
+                       layout.pos.col = 1))
+print(p2, vp = viewport(layout.pos.row = 1,
+                       layout.pos.col = 2))
+popViewport()
+```
+
+## Ethnicity & race & gender
+```{r, echo=FALSE}
+data$applicant_race_name_1 <- data$applicant_race_name_1 %>% 
+  str_replace("^Inf.*$","Info not provided")
+data$applicant_ethnicity_name <- data$applicant_ethnicity_name %>% 
+  str_replace("^Inf.*$","Info not provided")
+data$applicant_sex_name <- data$applicant_sex_name %>% 
+  str_replace("^Inf.*$","Info not provided")
+
+p1 <- data %>% 
+  group_by(applicant_ethnicity_name) %>% 
+  count(loan_status) %>% 
+  spread(loan_status,n) %>% 
+  mutate(success_rate = round(success/(success + fail)*100,2)) %>% 
+  arrange(desc(success_rate)) %>% 
+  mutate(failure_rate  = 100- success_rate) %>% 
+  select(applicant_ethnicity_name, success_rate,failure_rate) %>% 
+  gather(key = 'group', value = 'rate', success_rate, failure_rate) %>% 
+  ggplot(mapping = aes(x = applicant_ethnicity_name, y = rate, group = group, fill = group)) + 
+  geom_col(position = "dodge") + 
+  theme1 + 
+  theme(axis.text.x = element_text(hjust = 0, angle = -30)) +
+  labs(title = "Applicant ethnicity", x = "") + 
+  scale_fill_manual(values = c("#D55E00", "#CC79A7"))
+
+p2 <- data %>% 
+  group_by(applicant_sex_name) %>% 
+  count(loan_status) %>% 
+  spread(loan_status,n) %>% 
+  mutate(success_rate = round(success/(success + fail)*100,2)) %>% 
+  arrange(desc(success_rate)) %>% 
+  mutate(failure_rate  = 100- success_rate) %>% 
+  select(applicant_sex_name, success_rate,failure_rate) %>% 
+  gather(key = 'group', value = 'rate', success_rate, failure_rate) %>% 
+  ggplot(mapping = aes(x = applicant_sex_name, y = rate, group = group, fill = group)) + 
+  geom_col(position = "dodge") + 
+  theme1 + 
+  theme(axis.text.x = element_text(hjust = 0, angle = -30)) +
+  labs(title = "Applicant gender", x = "") + 
+  scale_fill_manual(values = c("#D55E00", "#CC79A7"))
+
+p3 <- data %>% 
+  group_by(applicant_race_name_1) %>% 
+  count(loan_status) %>% 
+  spread(loan_status,n) %>% 
+  mutate(success_rate = success/(success + fail)*100, 
+         failure_rate  = 100- success_rate) %>% 
+  select(applicant_race_name_1, success_rate,failure_rate) %>% 
+  gather(key = 'group', value = 'rate', success_rate, failure_rate) %>% 
+  ggplot(aes(x=applicant_race_name_1, y = rate, group = group, color = group)) + 
+  geom_point() + 
+  geom_line() + 
+  labs(title = "Applicant race", x = "") + 
+  theme1 + 
+  theme(axis.text.x = element_text(hjust = 0, angle = -30)) +
+  scale_fill_manual(values = cbPalette)
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(2, 2)))
+print(p1, vp = viewport(layout.pos.row = 1,
+                       layout.pos.col = 1))
+print(p2, vp = viewport(layout.pos.row = 1,
+                       layout.pos.col = 2))
+print(p3, vp = viewport(layout.pos.row = 2,
+                       layout.pos.col = 1:2))
+popViewport()
+```
+
+##
+* Chi square test
+```{r, echo=FALSE}
+## Gender and loan status
+data %>% 
+  filter(applicant_sex_name %in% c('Male', 'Female')) %>% 
+  with(table(loan_status, applicant_sex_name)) %>% 
+  chisq.test()
+
+## Ethnicity and loan status
+data %>% 
+  filter(applicant_ethnicity_name %in% c('Hispanic or Latino',
+                                         'Not Hispanic or Latino')) %>% 
+  with(table(loan_status, applicant_ethnicity_name)) %>% 
+  chisq.test()
+
+## Race and loan status
+data %>% 
+  filter(!applicant_race_name_1 %in% c('Not applicable', 'info not provided')) %>% 
+  with(table(loan_status, applicant_race_name_1)) %>% 
+  chisq.test()
+```
+
+
+## Major reason of denial
+For those who were denied, what are the reasons?
+```{r, echo=FALSE}
+data %>% 
+  filter(loan_status == "fail" & denial_reason_name_1!="") %>% 
+  count(denial_reason_name_1) %>% 
+  arrange(desc(n)) %>% 
+  rename(count = n, denial = denial_reason_name_1) %>% 
+  ggplot(aes(x = reorder(denial, count), y = count)) + 
+  geom_bar(stat = 'identity',aes(fill = reorder(denial, count))) + 
+  labs(title = "Reasons for loan denials", x = "") + 
+  theme1 + 
+  theme(axis.text.x = element_text(hjust = 0, angle = -45)) + 
+  scale_fill_manual(values = cbPalette) + 
+  guides(fill = "none")
+```
+
+```{r, echo=FALSE}
+
+```
+
+```{r, echo=FALSE}
+
+```
+
+## Home improvement part
+Which part of house people are more interested to improve?
+```{r, include=FALSE}
+library(RSQLite)
+dcon <- dbConnect(SQLite(), dbname = 'E:/605/A-Final Project/RSQL.db','synchronous' = NULL)
+RSQLite::initRegExp(dcon)
+```
+
+```{r, include=FALSE}
+dbSendQuery(conn=dcon,"drop table HI")
+dbSendQuery(conn=dcon,"drop table HIplot")
+```
+
+```{r, include=FALSE}
+hitx<-dbSendQuery(conn = dcon, 
+"create table HI as
+select addr_state, desc as description,
+case when desc REGEXP 'kitchen|Kitchen|KITCHEN' then 'kitchen'
+when desc REGEXP 'loor' then 'floor'
+when desc REGEXP 'roof' then 'roof'
+when desc REGEXP 'athroom|BATHROOM' then 'bathroom'
+when desc REGEXP 'pool' then 'pool'
+when desc REGEXP 'fenc|Fence' then 'fence'
+when desc REGEXP 'yard' then 'yard'
+when desc REGEXP 'A/C|onditioner' then 'A/C'
+when desc REGEXP 'window' then 'window'
+when desc REGEXP 'sale|rent|market' then 'for sale or rent'
+when desc REGEXP 'solidat|payoff|pay off' then 'debt consolidation'
+else 'others' end as summary 
+from LD;
+")
+hi_plot<-dbSendQuery(conn=dcon,
+"create table HIplot as select description, addr_state,summary from HI 
+where addr_state='TX' OR addr_state='NY' OR addr_state='PA' OR 
+addr_state='GA' OR addr_state='IL' OR addr_state='OH' OR 
+addr_state='NH' OR addr_state='VA' OR addr_state='FL'")
+
+hiplot<-dbReadTable(dcon, "HIplot")
+hiplot <- hiplot %>%filter(summary != "others")%>%filter(summary!="debt consolidation")%>%filter(summary!="for sale or rent")
+```
+
+```{r, echo=FALSE}
+ggplot(data=hiplot)+
+  geom_bar(aes(x=summary,fill=summary))+
+  theme(axis.text.x=element_text(angle=45,hjust=1,size=10))+
+  facet_wrap(~addr_state,ncol=3)
+```
+
+## Machine learning model
+```{r,include=FALSE,warning=FALSE}
+df <- data %>%
+  select(loan_status, agency_abbr, loan_type_name, property_type_name, loan_purpose_name,
+         owner_occupancy_name, preapproval_name, action_taken_name,
+         applicant_ethnicity_name, applicant_race_name_1, applicant_sex_name,
+         purchaser_type_name, hoepa_status_name, lien_status_name,
+         loan_amount_000s, census_tract_number, applicant_income_000s, population,
+         minority_population, hud_median_family_income, tract_to_msamd_income,
+         number_of_owner_occupied_units, number_of_1_to_4_family_units) %>%
+drop_na
+## Change the categorical variables into factor
+for(i in 1:14){
+df[,i] <- as.factor(df[,i])
+}
+## Split the data to train set and test set
+set.seed(1000)
+trainlist <- createDataPartition(df$loan_status,p=3/5, list = FALSE)
+df_train <- df[trainlist,]
+df_test <- df[-trainlist,]
+## Fit the logistic model
+df <- data %>%
+  select(loan_status, agency_abbr, loan_type_name, property_type_name, loan_purpose_name,
+         owner_occupancy_name, preapproval_name, action_taken_name,
+         applicant_ethnicity_name, applicant_race_name_1, applicant_sex_name,
+         purchaser_type_name, hoepa_status_name, lien_status_name,
+         loan_amount_000s, census_tract_number, applicant_income_000s, population,
+         minority_population, hud_median_family_income, tract_to_msamd_income,
+         number_of_owner_occupied_units, number_of_1_to_4_family_units) %>%
+drop_na
+## Change the categorical variables into factor
+for(i in 1:14){
+df[,i] <- as.factor(df[,i])
+}
+## Split the data to train set and test set
+set.seed(1000)
+trainlist <- createDataPartition(df$loan_status,p=3/5, list = FALSE)
+df_train <- df[trainlist,]
+df_test <- df[-trainlist,]
+## Fit the logistic model
+mylogit <- glm(loan_status~., data = df_train, family = binomial())
+## Prediction
+df_pred <- predict(mylogit, newdata = df_test[,-1], type = "response") 
+df_new <- ifelse(df_pred<=0.5,"success","fail")
+## Confusion Matrix confusionMatrix(as.factor(df_new),df_test$loan_status)
+## The accurate rate is 100%! The model fits very well.
+## ROC curve
+ROC <- roc(df_test$loan_status, df_pred)
+```
+
+```{r,include=TRUE,results='hide', warning=FALSE}
+CF<-matrix(c(204443,0,0,96040),nrow=2,ncol = 2)
+colnames(CF)<-c("positive","negative")
+rownames(CF)<-c("positive","negative")
+CF<-as.table(CF)
+t<-knitr::kable(CF,align = "c")%>%kable_styling(full_width = 1,font_size=12)%>%row_spec(1:2, bold = TRUE)
+plot(ROC)
+auc(ROC)
+CF<-tableGrob(CF)
+
+vp <- viewport(x = 0.25, y = 0.5, height=0.7,width=0.5)
+grid.show.viewport(vp)
+vp_2<-viewport(x = 0.75, y = 0.5, height=0.7,width=0.5)
+grid.show.viewport(vp_2)
+print(plot(ROC), vp = vp)
+print(CF,vp=vp_2)
+```
+
+##
+$$
+\begin{aligned}
+\text { false positive rate } &=\text { specificity } \\
+&=\frac{\text { true negatives }}{\text { true negatives + false positives }}
+\end{aligned}
+$$
+$$
+\begin{aligned}
+\text { true positive rate } &=\text { sensitivity } \\
+&=\frac{\text { true positives }}{\text { true positives + false negatives }}
+\end{aligned}
+$$
+
+
+* the logistical regression model has a great performance
+
+## Conclusion
+* For properties of loans:
+   * Apply a "home purchase" loan.
+   * Apply for a multifamily or 1-4 family dwelling.
+   * Get the loan secured by a lien, preferably by a first lien.
+   
+* For applicants:
+  * Get a home loan in Jeff Davis County (highest approval rate).
+  * Income should not less than the median family income of that MSA/MD.
+  * Apply for loans proportional to the income.
+  * Maintain good credit history.
+  
